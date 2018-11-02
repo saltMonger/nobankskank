@@ -57,40 +57,48 @@ scefunc = *-2
 	rts ; end this part
 beginprog
     ;make sure we zero our ypointers so we don't spin or overwrite mem
+    ldy scrollstallcont
+    cpy #scrollstall+1
+    blt bp2
+    ldy #0
+    sty scrollstallcont
+bp2
     lda #0
     sta ypos
-    sta typos
     ;cleanup foreground hscroll
     lda forescrollcont
-    cmp #16
+    cmp #15
     blt backgroundscrollcleanup
     lda #0
     sta forescrollcont
     ;because forescroll got reset, we'll need to increment the texture pointer
     lda foretexturecont
     adc #1
-    cmp #4
+    cmp #19
     blt backgroundscrollcleanup
     lda #0
     sta foretexturecont
     ;cleanup background scroll
 backgroundscrollcleanup
     lda backscrollcont
-    cmp #16
+    cmp #15
     blt beforedrawloop
     lda #0
     sta backscrollcont
-    lda textureoff
+    lda backtexturecont
     adc #1
-    cmp #20
+    cmp #19
     blt beforedrawloop
     lda #0
 beforedrawloop
-    sta textureoff
+    sta backtexturecont
     ;now make sure HSCROLL is current
     lda backscrollcont
     adc #1
     sta backscrollcont
+    ldy scrollstallcont         ;do stalling so that scroller isn't insanely fast
+    cpy #scrollstall
+    blt drawloop
     sta rHSCROL
 ;drawloop runs as deferred VBL
 drawloop
@@ -111,32 +119,38 @@ preparebufferpostions2
     sta textureptr
     lda texture_hi,y
     sta textureptr+1
+checkwindowline
+    ;should have the ypos still in reg y
+    cpy #26                     ;get an actual value for this
+    bge prepareforblitforeground    ;if we're low enough on the screen, this will be the foreground scroller
 prepareforblit
-    ldy currtexpos              ;get X for texture
+    ldy backtexturecont              ;get the offset for texture1
+    sty currtexpos
 blitline
-    cpy #20
+    cpy #19                     ;check if the value is outside of tex memory
     blt blitlinexfer
     ldy #0                      ;going to overflow on the texture, reset xptr to 0
+    sty currtexpos
 blitlinexfer
     lda (textureptr),y          ;get our texture byte
-    sty currtexpos
     ldy currwindowx             ;get the xptr for drawing to screen
-    cpy #20                     ;check to see if window X is offscreen
+    cpy #19                     ;check to see if window X is offscreen
     bge blitlinefinish
     sta (screenptr),y           ;toss it into screen
-    iny                         ;hop to next screenmemory byte
-    sty currwindowx             ;store to window x var
-    ldy currtexpos
-    iny                         ;increment and jump back to check
-    sty currtexpos
+    inc currwindowx             ;increment the window position
+    inc currtexpos            ;increment the texture position 
+    ldy currtexpos            ;prepare to check texture mapping ptr 
     jmp blitline
 blitlinefinish
     lda #0
-    sta currwindowx
-    sta currtexpos
+    sta currwindowx             ;reset window position
     inc ypos                    ;straight memory increment, as we'll recall later
     ;TODO: increment texture position as well, when incremented
     jmp drawloop                ;goto check stage
+prepareforblitforeground
+    ldy foretexturecont
+    sty currtexpos
+    jmp blitline                ; we just needed to tack this on to grab foretexturecont
 
 vblbeginprog
 	sta nmiA
@@ -144,6 +158,7 @@ vblbeginprog
 	sty nmiY
 	bit rNMIST
 	bpl +
+    ;is this treating dli as an interrupt, or is it just executing in order at the end of vbl?
 	jmp dlipalette2
 VDSLST = *-2
 +	mwa sdlstl, rDLISTL
@@ -215,6 +230,9 @@ dliroutine
     sta rWSYNC                   ;set WSYNC to await next hsync
     ;TODO: UPDATE TO GIVE A DIFFERENT HSCROLL VAL BASED ON MEMORY
     ;inc rHSCROL                 ;increment hscroll
+    lda scrollstallcont
+    cmp #scrollstall
+    blt retdli
     lda forescrollcont          ;get the foreground hscroll counter
     adc #2                      ;scroll at 2x speed
     sta rHSCROL
@@ -297,12 +315,12 @@ foretexturecont .byte   $00
 backscrollcont  .byte   $00
 backtexturecont .byte   $00
 ypos            .byte   $00
-typos           .byte   $00
 
-texturelen      .byte   48
-textureoff      .byte   $00
 currtexpos      .byte   $00
 currwindowx     .byte   $00
+
+scrollstallcont .byte   $00
+scrollstall     = 8
 
     ;===============
     ;DISPLAY LIST
@@ -332,7 +350,7 @@ displaylist
 	.byte $5a, $90, $e1
 	.byte $5a, $a4, $e1
 	.byte $da, $b8, $e1
-	.byte $5a, $cc, $e1
+	.byte $da, $cc, $e1
 	.byte $5a, $e0, $e1
 	.byte $5a, $f4, $e1
 	.byte $5a, $08, $e2
